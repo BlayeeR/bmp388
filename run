@@ -1,0 +1,7 @@
+#!/bin/bash
+
+set -o allexport
+source ./.env
+set +o allexport
+
+./poetry run python3 -u ./bmp388/main.py

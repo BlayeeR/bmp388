@@ -1,27 +1,29 @@
+import asyncio
+import os
 from dataclasses import dataclass
-from spidev import SpiDev
 from typing import List
 
 import RPi.GPIO as gpio
-import math
+from spidev import SpiDev
+
 
 @dataclass
 class Bmp388CalibrationData:
-    TemperatureFactor1: float
-    TemperatureFactor2: float
-    TemperatureFactor3: float
-    PressureFactor1: float
-    PressureFactor2: float
-    PressureFactor3: float
-    PressureFactor4: float
-    PressureFactor5: float
-    PressureFactor6: float
-    PressureFactor7: float
-    PressureFactor8: float
-    PressureFactor9: float
-    PressureFactor10: float
-    PressureFactor11: float
-    MeasuredTemp: float = 0
+    t1: float
+    t2: float
+    t3: float
+    p1: float
+    p2: float
+    p3: float
+    p4: float
+    p5: float
+    p6: float
+    p7: float
+    p8: float
+    p9: float
+    p10: float
+    p11: float
+    temp: float = 0
 
 READ_COMMAND = 0x80 # 0b10000000
 WRITE_COMMAND = 0x00 # 0b00000000
@@ -62,12 +64,6 @@ class Bmp388:
 
     def __del__(self):
         self.spi.close()
-
-    def reg_data_to_bytearray(self, reg_data: List[int]) -> bytearray:
-        data = bytearray(len(reg_data))
-        for index, byte in enumerate(reg_data):
-            data[index] = byte
-        return data
 
     def get_reg(self, reg, length) -> List[int]:
         gpio.output(self.chip_select_pin, gpio.LOW)
@@ -112,91 +108,95 @@ class Bmp388:
 
         return status
 
-    def uint8_int(self, num: int) -> int:
-        if(num > 127):
-            num = num - 256
-        return num
-
-    def merge_bytes(self, bytes: bytearray | List[int], unsigned: bool = True) -> int:
-        output = 0
-        for index, byte in enumerate(bytes):
-            data = (byte if unsigned else self.uint8_int(byte)) << (8*index)
-            output |= data
-
-        return output
-
     def get_sensor_time(self) -> int:
         reg_data = self.get_reg(0x0C, 3)
-        data = self.reg_data_to_bytearray(reg_data)
 
-        clock = self.merge_bytes(data)
+        clock = int.from_bytes(reg_data, "little", signed=False)
 
         return round(clock/29000)
 
     def get_temp(self) -> float:
         reg_data = self.get_reg(0x07, 3)
-        data = self.reg_data_to_bytearray(reg_data)
+        raw_temp = int.from_bytes(reg_data, "little", signed=False)
 
-        raw_temp = self.merge_bytes(data)
+        partial_data_1 = raw_temp - self.calibration_data.t1
+        partial_data_2 = partial_data_1 * self.calibration_data.t2
 
-        partial_data_1 = raw_temp - self.calibration_data.TemperatureFactor1
-        partial_data_2 = partial_data_1 * self.calibration_data.TemperatureFactor2
-
-        temp = partial_data_2 + (partial_data_1 * partial_data_1) * self.calibration_data.TemperatureFactor3
-        self.calibration_data.MeasuredTemp = temp
+        temp = partial_data_2 + (partial_data_1 * partial_data_1) * self.calibration_data.t3
+        self.calibration_data.temp = temp
 
         return round(temp, 2)
 
     def get_pressure(self) -> float:
         reg_data = self.get_reg(0x04, 3)
-        data = self.reg_data_to_bytearray(reg_data)
+        raw_pressure = int.from_bytes(reg_data, "little", signed=False)
 
-        raw_pressure = self.merge_bytes(data)
+        partial_data_1 = self.calibration_data.p6 * self.calibration_data.temp
+        partial_data_2 = self.calibration_data.p7 * (self.calibration_data.temp * self.calibration_data.temp)
+        partial_data_3 = self.calibration_data.p8 * (self.calibration_data.temp * self.calibration_data.temp * self.calibration_data.temp)
+        partial_out_1 = self.calibration_data.p5 + partial_data_1 + partial_data_2 + partial_data_3
 
-        partial_data_1 = self.calibration_data.PressureFactor6 * self.calibration_data.MeasuredTemp
-        partial_data_2 = self.calibration_data.PressureFactor7 * (self.calibration_data.MeasuredTemp * self.calibration_data.MeasuredTemp)
-        partial_data_3 = self.calibration_data.PressureFactor8 * (self.calibration_data.MeasuredTemp * self.calibration_data.MeasuredTemp * self.calibration_data.MeasuredTemp)
-        partial_out_1 = self.calibration_data.PressureFactor5 + partial_data_1 + partial_data_2 + partial_data_3
-
-        partial_data_1 = self.calibration_data.PressureFactor2 * self.calibration_data.MeasuredTemp
-        partial_data_2 = self.calibration_data.PressureFactor3 * (self.calibration_data.MeasuredTemp * self.calibration_data.MeasuredTemp)
-        partial_data_3 = self.calibration_data.PressureFactor4 * (self.calibration_data.MeasuredTemp * self.calibration_data.MeasuredTemp * self.calibration_data.MeasuredTemp)
-        partial_out2 = raw_pressure * (self.calibration_data.PressureFactor1 + partial_data_1 + partial_data_2 + partial_data_3)
+        partial_data_1 = self.calibration_data.p2 * self.calibration_data.temp
+        partial_data_2 = self.calibration_data.p3 * (self.calibration_data.temp * self.calibration_data.temp)
+        partial_data_3 = self.calibration_data.p4 * (self.calibration_data.temp * self.calibration_data.temp * self.calibration_data.temp)
+        partial_out2 = raw_pressure * (self.calibration_data.p1 + partial_data_1 + partial_data_2 + partial_data_3)
 
         partial_data_1 = raw_pressure * raw_pressure
-        partial_data_2 = self.calibration_data.PressureFactor9 + self.calibration_data.PressureFactor10 * self.calibration_data.MeasuredTemp
+        partial_data_2 = self.calibration_data.p9 + self.calibration_data.p10 * self.calibration_data.temp
         partial_data_3 = partial_data_1 * partial_data_2
-        partial_data_4 = partial_data_3 + (raw_pressure * raw_pressure * raw_pressure) * self.calibration_data.PressureFactor11
+        partial_data_4 = partial_data_3 + (raw_pressure * raw_pressure * raw_pressure) * self.calibration_data.p11
         comp_press = partial_out_1 + partial_out2 + partial_data_4
 
-        return comp_press
+        return round(comp_press / 100, 2)
 
 
     def get_calibration_data(self) -> Bmp388CalibrationData:
         reg_data = self.get_reg(0x31, 21)
 
+        nvm_par_t1 = int.from_bytes(reg_data[:2], "little", signed=False)
+        nvm_par_t2 = int.from_bytes(reg_data[2:4], "little", signed=False)
+        nvm_par_t3 = int.from_bytes(reg_data[4:5], "little", signed=True)
+        nvm_par_p1 = int.from_bytes(reg_data[5:7], "little", signed=True)
+        nvm_par_p2 = int.from_bytes(reg_data[7:9], "little", signed=True)
+        nvm_par_p3 = int.from_bytes(reg_data[9:10], "little", signed=True)
+        nvm_par_p4 = int.from_bytes(reg_data[10:11], "little", signed=True)
+        nvm_par_p5 = int.from_bytes(reg_data[11:13], "little", signed=False)
+        nvm_par_p6 = int.from_bytes(reg_data[13:15], "little", signed=False)
+        nvm_par_p7 = int.from_bytes(reg_data[15:16], "little", signed=True)
+        nvm_par_p8 = int.from_bytes(reg_data[16:17], "little", signed=True)
+        nvm_par_p9 = int.from_bytes(reg_data[17:19], "little", signed=True)
+        nvm_par_p10 = int.from_bytes(reg_data[19:20], "little", signed=True)
+        nvm_par_p11 = int.from_bytes(reg_data[20:21], "little", signed=True)
+
         calibration_data = Bmp388CalibrationData(
-            self.merge_bytes(reg_data[:2]) / math.pow(2, -8),
-            self.merge_bytes(reg_data[2:4]) / math.pow(2, 30),
-            self.merge_bytes(reg_data[4:5], unsigned=False) / math.pow(2, 48),
-            self.merge_bytes(reg_data[5:7], unsigned=False) / math.pow(2, 20),
-            self.merge_bytes(reg_data[7:9], unsigned=False) / math.pow(2, 29),
-            self.merge_bytes(reg_data[9:10], unsigned=False) / math.pow(2, 32),
-            self.merge_bytes(reg_data[10:11], unsigned=False) / math.pow(2, 37),
-            self.merge_bytes(reg_data[11:13]) / math.pow(2, -3),
-            self.merge_bytes(reg_data[13:15]) / math.pow(2, 6),
-            self.merge_bytes(reg_data[15:16], unsigned=False) / math.pow(2, 8),
-            self.merge_bytes(reg_data[16:17], unsigned=False) / math.pow(2, 15),
-            self.merge_bytes(reg_data[17:19], unsigned=False) / math.pow(2, 48),
-            self.merge_bytes(reg_data[19:20], unsigned=False) / math.pow(2, 48),
-            self.merge_bytes(reg_data[20:21], unsigned=False) / math.pow(2, 65),
+            nvm_par_t1 / 2 ** -8,
+            nvm_par_t2 / 2 ** 30,
+            nvm_par_t3 / 2 ** 48,
+            (nvm_par_p1 - 2 ** 14) / 2 ** 20,
+            (nvm_par_p2 - 2 ** 14) / 2 ** 29,
+            nvm_par_p3 / 2 ** 32,
+            nvm_par_p4 / 2 ** 37,
+            nvm_par_p5 / 2 ** -3,
+            nvm_par_p6 / 2 ** 6,
+            nvm_par_p7 / 2 ** 8,
+            nvm_par_p8 / 2 ** 15,
+            nvm_par_p9 / 2 ** 48,
+            nvm_par_p10 /2 ** 48,
+            nvm_par_p11 /2 ** 65,
         )
 
         return calibration_data
 
-sensor = Bmp388(0, 0, 29)
+async def main():
+    sensor = Bmp388(0, 0, 29)
 
-print(sensor.get_temp())
-print(sensor.get_pressure())
-print(sensor.get_status())
-print(sensor.get_err())
+    while True:
+        await asyncio.sleep(1)
+        os.system('clear')
+        print(f"Chip ID: {sensor.get_chip_id()}")
+        print(f"Sensor time: {sensor.get_sensor_time()}")
+        print(f"Temperature: {sensor.get_temp()}")
+        print(f"Pressure: {sensor.get_pressure()}")
+
+if __name__ == "__main__":
+    asyncio.run(main())

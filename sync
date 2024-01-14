@@ -1,0 +1,7 @@
+#!/bin/bash
+
+set -o allexport
+source ./.env
+set +o allexport
+
+rsync -aviz --progress --delete ./ $RPI_USER@$RPI_HOSTNAME:$RPI_PROJECT_DIR

@@ -1,0 +1,12 @@
+#!/bin/bash
+
+set -o allexport
+source ./.env
+set +o allexport
+
+ssh $RPI_USER@$RPI_HOSTNAME "
+    export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring;
+    export TERM=xterm;
+    cd $RPI_PROJECT_DIR;
+    poetry $@
+"
